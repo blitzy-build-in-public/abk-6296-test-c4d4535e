@@ -46,7 +46,9 @@ function logRequest(method, path) {
 function handleRequest(req, res) {
   const path = requestPath(req);
 
-  logRequest(req.method, path);
+  // The log line's path field carries no query string or fragment, so the raw target the
+  // parse-failure fallback returns is cut at its first `?` or `#`; routing still uses `path`.
+  logRequest(req.method, path.split(/[?#]/)[0]);
 
   if (req.method === 'GET' && path === HELLO_PATH) {
     handleHelloRequest(req, res);
