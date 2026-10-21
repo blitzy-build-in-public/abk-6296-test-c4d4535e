@@ -160,6 +160,20 @@ numeric coercion would read something into them. Ports below `1024` — `80` and
 instance — are refused with the same message, because the range rule is unconditional and no
 option exists to bind a privileged port.
 
+Startup also fails, with a different message, when the port itself cannot be bound — when
+another process already holds it, for instance. The server binds nothing: the message below
+is written to stderr, nothing is written to stdout, and the process exits with status `1`.
+The port the message names is the port that could not be bound.
+
+```text
+Cannot start server: port 3000 is already in use. Free the port or start the server with a different PORT.
+```
+
+A bind that fails for any other reason — a permission error, for example — is reported the
+same way, with the operating system's own error message in place of the port-in-use sentence:
+`Cannot start server: <reason>. Check that the port is available and that the process has permission to bind it.`
+Neither message is accompanied by a stack trace.
+
 ## Routing
 
 A request matches only when its method is `GET` and its path is `/hello`. The path compared
