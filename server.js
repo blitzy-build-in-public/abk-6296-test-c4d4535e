@@ -29,32 +29,102 @@ function handleNotFoundRequest(req, res) {
   sendText(res, 404, NOT_FOUND_RESPONSE_BODY);
 }
 
-function requestPath(req) {
+// The one response path for a request that never reaches a ServerResponse, where sendText has no
+// response object to write to: the same 404 contract, framed by hand and closed because a
+// rejected connection cannot be reused.
+function sendRawNotFound(socket) {
+  socket.end(
+    'HTTP/1.1 404 Not Found\r\n' +
+      `Content-Type: ${CONTENT_TYPE}\r\n` +
+      `Date: ${new Date().toUTCString()}\r\n` +
+      `Content-Length: ${NOT_FOUND_RESPONSE_BODY.length}\r\n` +
+      'Connection: close\r\n' +
+      '\r\n' +
+      NOT_FOUND_RESPONSE_BODY,
+  );
+}
+
+// Resolve a request target to the pathname that routing and logging both compare, dropping the
+// query string and fragment. Shared by the request listener and the rejection logger so the
+// resolved path cannot differ between them.
+function resolveTargetPath(target) {
   try {
-    return new URL(req.url, 'http://localhost').pathname;
+    return new URL(target, 'http://localhost').pathname;
   } catch {
     // A target the URL constructor rejects, such as `http://[`, falls back to the raw
     // target so the request is answered with the 404 instead of crashing the process.
-    return req.url;
+    return target;
   }
+}
+
+function requestPath(req) {
+  return resolveTargetPath(req.url);
+}
+
+// The path a log line carries: the resolved pathname, and — for a target the URL constructor
+// rejects, where the raw target stands in for it — the raw target cut at its first `?` or `#`, so
+// a query string or fragment never reaches the log line.
+function pathForLog(target) {
+  return resolveTargetPath(target).split(/[?#]/)[0];
 }
 
 function logRequest(method, path) {
   process.stdout.write(`[${new Date().toISOString()}] [${method}] [${path}]\n`);
 }
 
+// A log field that cannot forge a log line: printable ASCII only, otherwise a placeholder.
+function logField(value) {
+  return /^[\x21-\x7e]+$/.test(value) ? value : '-';
+}
+
+// Log a parser-rejected request from the bytes the parser read, so it still gets its one line and
+// its path is resolved exactly as a routed request's would be.
+function logRejectedRequest(rawPacket) {
+  const firstLine = Buffer.isBuffer(rawPacket) ? rawPacket.toString('latin1').split('\n', 1)[0] : '';
+  const fields = /^([^ \t]+)[ \t]+([^ \t]+)/.exec(firstLine);
+
+  if (fields === null) {
+    logRequest('-', '-');
+  } else {
+    // The path is resolved first, exactly as a routed request's is, and sanitised afterwards, so a
+    // target that survives resolution cannot carry a byte into the log that breaks its one line.
+    logRequest(logField(fields[1]), logField(pathForLog(fields[2])));
+  }
+}
+
 function handleRequest(req, res) {
   const path = requestPath(req);
 
-  // The log line's path field carries no query string or fragment, so the raw target the
-  // parse-failure fallback returns is cut at its first `?` or `#`; routing still uses `path`.
-  logRequest(req.method, path.split(/[?#]/)[0]);
+  // Routing still uses `path`; the logged path comes from `pathForLog`, which keeps the query
+  // string and fragment out of the log line.
+  logRequest(req.method, pathForLog(req.url));
 
   if (req.method === 'GET' && path === HELLO_PATH) {
     handleHelloRequest(req, res);
   } else {
     handleNotFoundRequest(req, res);
   }
+}
+
+// The server's 'clientError' listener: a request the HTTP parser rejects never reaches
+// handleRequest, so it is logged and answered with the catch-all 404 contract here. An aborted
+// connection, or a socket the parser has already answered and closed, is dropped instead.
+function handleClientError(err, socket) {
+  if (err.code === 'ECONNRESET' || !socket.writable) {
+    socket.destroy();
+    return;
+  }
+
+  logRejectedRequest(err.rawPacket);
+  sendRawNotFound(socket);
+}
+
+// The server's 'connect' listener: Node diverts CONNECT to this event rather than the request
+// listener, so the request gets the same log line and 404 contract as any other method.
+function handleDivertedRequest(req, socket) {
+  logRequest(req.method, pathForLog(req.url));
+
+  sendRawNotFound(socket);
 }
 
 function resolvePort(rawPort) {
@@ -120,6 +190,11 @@ function startServer(port) {
   server.on('listening', () => {
     process.stdout.write(`Server listening on port ${port}\n`);
   });
+
+  // A request the HTTP parser rejects, and a CONNECT Node diverts to its own event, reach neither
+  // handleRequest nor Node's default handling, so both get their log line and 404 from these.
+  server.on('clientError', handleClientError);
+  server.on('connect', handleDivertedRequest);
 
   process.on('SIGINT', handleShutdownSignal);
 
