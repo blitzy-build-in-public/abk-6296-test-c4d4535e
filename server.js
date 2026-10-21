@@ -33,6 +33,14 @@ function handleNotFoundRequest(req, res) {
 // response object to write to: the same 404 contract, framed by hand and closed because a
 // rejected connection cannot be reused.
 function sendRawNotFound(socket) {
+  // The socket handed to a diverted CONNECT arrives without an 'error' listener — Node removes its
+  // own when it diverts — so a write error on it (a peer that resets mid-404) would be an unhandled
+  // 'error' event and take the process down. A write error means the connection is unusable, so the
+  // socket is destroyed; the call is idempotent.
+  socket.on('error', () => {
+    socket.destroy();
+  });
+
   socket.end(
     'HTTP/1.1 404 Not Found\r\n' +
       `Content-Type: ${CONTENT_TYPE}\r\n` +
@@ -87,7 +95,8 @@ function logRejectedRequest(rawPacket) {
   } else {
     // The path is resolved first, exactly as a routed request's is, and sanitised afterwards, so a
     // target that survives resolution cannot carry a byte into the log that breaks its one line.
-    logRequest(logField(fields[1]), logField(pathForLog(fields[2])));
+    // Upper-case the recovered token after the guard, so its line matches a routed request's.
+    logRequest(logField(fields[1]).toUpperCase(), logField(pathForLog(fields[2])));
   }
 }
 
@@ -107,9 +116,19 @@ function handleRequest(req, res) {
 
 // The server's 'clientError' listener: a request the HTTP parser rejects never reaches
 // handleRequest, so it is logged and answered with the catch-all 404 contract here. An aborted
-// connection, or a socket the parser has already answered and closed, is dropped instead.
+// connection, or a socket whose request is already answered, is dropped instead: either the
+// response is still attached to it with its header written, or the parser is still inside a message
+// whose head it completed, which handleRequest answered — a fresh rejection still gets its line.
 function handleClientError(err, socket) {
-  if (err.code === 'ECONNRESET' || !socket.writable) {
+  const responseInFlight = socket._httpMessage;
+  const unfinishedMessage = socket.parser && socket.parser.incoming;
+
+  if (
+    err.code === 'ECONNRESET' ||
+    !socket.writable ||
+    (responseInFlight && responseInFlight._headerSent) ||
+    unfinishedMessage
+  ) {
     socket.destroy();
     return;
   }
