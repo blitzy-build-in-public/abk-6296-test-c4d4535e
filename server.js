@@ -44,9 +44,8 @@ function sendRawNotFound(socket) {
   );
 }
 
-// Resolve a request target to the pathname that routing and logging both compare, dropping the
-// query string and fragment. Shared by the request listener and the rejection logger so the
-// resolved path cannot differ between them.
+// Resolve a request target to the value routing compares and every log site carries, dropping the
+// query string and fragment. Shared by all of them so the resolved path cannot differ.
 function resolveTargetPath(target) {
   try {
     return new URL(target, 'http://localhost').pathname;
@@ -95,7 +94,7 @@ function logRejectedRequest(rawPacket) {
 function handleRequest(req, res) {
   const path = requestPath(req);
 
-  // Routing still uses `path`; the logged path comes from `pathForLog`, which keeps the query
+  // Routing uses `path`; the logged path comes from `pathForLog`, which keeps the query
   // string and fragment out of the log line.
   logRequest(req.method, pathForLog(req.url));
 
